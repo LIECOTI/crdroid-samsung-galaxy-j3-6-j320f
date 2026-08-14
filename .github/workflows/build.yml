@@ -16,9 +16,21 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 1440
 
-    steps:
+steps:
       - name: Checkout workflow repo (local manifest + extra packages)
         uses: actions/checkout@v4
+
+      - name: Install base build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git-core gnupg flex bison build-essential zip curl \
+            zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 \
+            libncurses5 lib32ncurses-dev x11proto-core-dev libx11-dev \
+            lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip \
+            fontconfig bc rsync openjdk-8-jdk imagemagick lib32readline-dev \
+            liblz4-tool libssl-dev pngcrush schedtool squashfs-tools \
+            ccache libssl-dev libncurses5-dev jq
 
       - name: Free initial disk space for apt
         run: |
@@ -31,7 +43,7 @@ jobs:
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
-          root-reserve-mb: 4096
+          root-reserve-mb: 10240  # Оставим 10 ГБ на корню / для системных утилит и apt
           swap-size-mb: 8192
           remove-dotnet: 'true'
           remove-android: 'true'
