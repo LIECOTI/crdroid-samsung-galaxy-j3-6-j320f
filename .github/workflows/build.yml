@@ -1,0 +1,166 @@
+name: Build crDroid 7.1.2 - j3xlte
+
+on:
+  workflow_dispatch:
+
+env:
+  DEVICE: j3xlte
+  DEVICE_DIR: device/samsung/j3xlte
+  BRANCH: 7.1
+  MANIFEST_URL: https://github.com/crdroidandroid/android.git
+  LOCAL_MANIFEST_REPO: ${{ github.repository }}
+  BUILD_TARGET: bacon
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 1440
+
+    steps:
+      - name: Checkout workflow repo (to fetch local_manifests)
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 4096
+          swap-size-mb: 8192
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Set swap to 8G (extra safety net for jack/dex)
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
+      - name: Install base build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git-core gnupg flex bison build-essential zip curl \
+            zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 \
+            libncurses5 lib32ncurses-dev x11proto-core-dev libx11-dev \
+            lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip \
+            fontconfig bc rsync openjdk-8-jdk imagemagick lib32readline-dev \
+            liblz4-tool libssl-dev pngcrush schedtool squashfs-tools \
+            ccache libssl-dev libncurses5-dev
+
+      - name: Install python2.7 (legacy dependency, missing on 22.04)
+        run: |
+          sudo add-apt-repository -y ppa:deadsnakes/ppa
+          sudo apt-get update
+          sudo apt-get install -y python2.7
+          sudo update-alternatives --install /usr/bin/python python /usr/bin/python2.7 1
+          sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 2
+          curl -sS https://bootstrap.pypa.io/pip/2.7/get-pip.py -o get-pip.py
+          sudo python2.7 get-pip.py
+
+      - name: Install lib32ncurses5 / libncurses5 (legacy libs, missing on 22.04)
+        run: |
+          # These packages were dropped after Ubuntu 20.04 (focal). We pull the
+          # .deb files directly from the focal archive and install them manually
+          # instead of enabling a whole extra apt repo (avoids dependency clashes).
+          mkdir -p /tmp/legacy-libs && cd /tmp/legacy-libs
+          curl -sSLO http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.2-0ubuntu2_amd64.deb
+          curl -sSLO http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.2-0ubuntu2_amd64.deb
+          curl -sSLO http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/lib32tinfo5_6.2-0ubuntu2_amd64.deb
+          curl -sSLO http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/lib32ncurses5_6.2-0ubuntu2_amd64.deb
+          sudo dpkg -i ./*.deb || sudo apt-get install -f -y
+
+      - name: Install repo tool
+        run: |
+          mkdir -p ~/bin
+          curl -sS https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git config --global color.ui false
+
+      - name: Init repo manifest
+        run: |
+          mkdir -p ~/crdroid && cd ~/crdroid
+          ~/bin/repo init -u ${{ env.MANIFEST_URL }} -b ${{ env.BRANCH }} --depth=1
+
+      - name: Add local manifest
+        run: |
+          mkdir -p ~/crdroid/.repo/local_manifests
+          cp "$GITHUB_WORKSPACE/.repo/local_manifests/j3xlte.xml" \
+             ~/crdroid/.repo/local_manifests/j3xlte.xml
+
+      - name: Repo sync
+        run: |
+          cd ~/crdroid
+          ~/bin/repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+
+      - name: Fix lineage*.mk -> crdroid*.mk in device tree
+        run: |
+          cd ~/crdroid/${{ env.DEVICE_DIR }}
+          shopt -s nullglob
+          for f in lineage_*.mk; do
+            new="crdroid_${f#lineage_}"
+            echo "Renaming $f -> $new"
+            git mv "$f" "$new" 2>/dev/null || mv "$f" "$new"
+            sed -i "s/lineage_${{ env.DEVICE }}/crdroid_${{ env.DEVICE }}/g" "$new"
+            sed -i "s/PRODUCT_NAME := lineage_/PRODUCT_NAME := crdroid_/g" "$new"
+          done
+          # Also patch any other files that still reference lineage_j3xlte
+          grep -rl "lineage_${{ env.DEVICE }}" . 2>/dev/null | while read -r file; do
+            sed -i "s/lineage_${{ env.DEVICE }}/crdroid_${{ env.DEVICE }}/g" "$file"
+          done
+
+      - name: Set up ccache
+        run: |
+          cd ~/crdroid
+          echo "USE_CCACHE=1" >> ~/.bashrc
+          echo "CCACHE_EXEC=$(which ccache)" >> ~/.bashrc
+          ccache -M 20G || true
+
+      - name: Build crDroid for j3xlte
+        run: |
+          export USE_CCACHE=1
+          export CCACHE_EXEC=$(which ccache)
+          export JACK_SERVER_VM_ARGUMENTS="-Xmx4g -Dfile.encoding=UTF-8"
+          export ANDROID_JACK_VM_ARGS="-Xmx4g -Dfile.encoding=UTF-8"
+          export LC_ALL=C
+          cd ~/crdroid
+          source build/envsetup.sh
+          brunch ${{ env.DEVICE }}
+
+      - name: Locate build artifact
+        id: artifact
+        run: |
+          OUT_DIR=~/crdroid/out/target/product/${{ env.DEVICE }}
+          ZIP_PATH=$(find "$OUT_DIR" -maxdepth 1 -name "crDroid*${{ env.DEVICE }}*.zip" | head -n1)
+          if [ -z "$ZIP_PATH" ]; then
+            echo "No output zip found in $OUT_DIR" >&2
+            exit 1
+          fi
+          echo "zip_path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$(basename "$ZIP_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ env.DEVICE }}-${{ github.run_number }}
+          name: crDroid 7.1.2 - ${{ env.DEVICE }} (run #${{ github.run_number }})
+          files: ${{ steps.artifact.outputs.zip_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload build as workflow artifact (fallback)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.zip_name }}
+          path: ${{ steps.artifact.outputs.zip_path }}
+          if-no-files-found: warn
