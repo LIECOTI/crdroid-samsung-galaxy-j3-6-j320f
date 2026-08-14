@@ -9,14 +9,6 @@ env:
   BRANCH: 7.1
   MANIFEST_URL: https://github.com/crdroidandroid/android.git
   BUILD_TARGET: bacon
-  # Pin a specific microG GmsCore release instead of always grabbing the
-  # newest one. Newer GmsCore builds (2026-era) sit above 100MB and target
-  # Android 10+ behaviour (SafetyNet/Play-Integrity/AdServices stubs) that a
-  # 1.5GB-RAM Nougat device like the J3 (2016) does not need and may choke
-  # on. Leave empty to auto-fetch whatever is currently newest on the
-  # official microG F-Droid repo, or set to e.g. "" and edit the fetch step
-  # below to pin an older/lighter release from
-  # https://github.com/microg/GmsCore/releases instead.
   MICROG_PIN_LATEST: "true"
 
 jobs:
@@ -28,6 +20,14 @@ jobs:
       - name: Checkout workflow repo (local manifest + extra packages)
         uses: actions/checkout@v4
 
+      - name: Free initial disk space for apt
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo apt-get clean
+
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
@@ -38,6 +38,14 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
           remove-docker-images: 'true'
+
+      - name: Check available disk space & RAM
+        run: |
+          echo "=== Дисковое пространство (df -h) ==="
+          df -h
+          echo ""
+          echo "=== Оперативная память и Swap (free -h) ==="
+          free -h
 
       - name: Install base build dependencies
         run: |
@@ -63,9 +71,6 @@ jobs:
 
       - name: Install lib32ncurses5 / libncurses5 (legacy libs, missing on 22.04)
         run: |
-          # These packages were dropped after Ubuntu 20.04 (focal). We pull the
-          # .deb files directly from the focal archive and install them manually
-          # instead of enabling a whole extra apt repo (avoids dependency clashes).
           mkdir -p /tmp/legacy-libs && cd /tmp/legacy-libs
           curl -sSLO http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.2-0ubuntu2_amd64.deb
           curl -sSLO http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libncurses5_6.2-0ubuntu2_amd64.deb
@@ -113,7 +118,6 @@ jobs:
             sed -i "s/lineage_${{ env.DEVICE }}/crdroid_${{ env.DEVICE }}/g" "$new"
             sed -i "s/PRODUCT_NAME := lineage_/PRODUCT_NAME := crdroid_/g" "$new"
           done
-          # Also patch any other files that still reference lineage_j3xlte
           grep -rl "lineage_${{ env.DEVICE }}" . 2>/dev/null | while read -r file; do
             sed -i "s/lineage_${{ env.DEVICE }}/crdroid_${{ env.DEVICE }}/g" "$file"
           done
@@ -122,43 +126,43 @@ jobs:
         run: |
           mkdir -p /tmp/microg
           python3 - "/tmp/microg" <<'PYEOF'
-          import sys, os, urllib.request, xml.etree.ElementTree as ET
+import sys, os, urllib.request, xml.etree.ElementTree as ET
 
-          outdir = sys.argv[1]
-          base = "https://microg.org/fdroid/repo/"
-          targets = {
-              "com.google.android.gms": "GmsCore.apk",
-              "com.android.vending":    "FakeStore.apk",
-              "com.google.android.gsf": "GsfProxy.apk",
-          }
+outdir = sys.argv[1]
+base = "https://microg.org/fdroid/repo/"
+targets = {
+    "com.google.android.gms": "GmsCore.apk",
+    "com.android.vending":    "FakeStore.apk",
+    "com.google.android.gsf": "GsfProxy.apk",
+}
 
-          with urllib.request.urlopen(base + "index.xml") as r:
-              tree = ET.fromstring(r.read())
+with urllib.request.urlopen(base + "index.xml") as r:
+    tree = ET.fromstring(r.read())
 
-          for app in tree.findall("application"):
-              appid = app.get("id")
-              if appid not in targets:
-                  continue
-              pkg = app.find("package")  # first <package> = newest version
-              apkname = pkg.find("apkname").text
-              dest = os.path.join(outdir, targets[appid])
-              print(f"[microG] {appid} -> {apkname}")
-              urllib.request.urlretrieve(base + apkname, dest)
-          PYEOF
+for app in tree.findall("application"):
+    appid = app.get("id")
+    if appid not in targets:
+        continue
+    pkg = app.find("package")
+    apkname = pkg.find("apkname").text
+    dest = os.path.join(outdir, targets[appid])
+    print(f"[microG] {appid} -> {apkname}")
+    urllib.request.urlretrieve(base + apkname, dest)
+PYEOF
 
           mkdir -p ~/crdroid/vendor/extra/apps/GmsCore/prebuilt
           mkdir -p ~/crdroid/vendor/extra/apps/FakeStore/prebuilt
           mkdir -p ~/crdroid/vendor/extra/apps/GsfProxy/prebuilt
-          cp /tmp/microg/GmsCore.apk    ~/crdroid/vendor/extra/apps/GmsCore/prebuilt/GmsCore.apk
-          cp /tmp/microg/FakeStore.apk  ~/crdroid/vendor/extra/apps/FakeStore/prebuilt/FakeStore.apk
-          cp /tmp/microg/GsfProxy.apk   ~/crdroid/vendor/extra/apps/GsfProxy/prebuilt/GsfProxy.apk
+          cp /tmp/microg/GmsCore.apk   ~/crdroid/vendor/extra/apps/GmsCore/prebuilt/GmsCore.apk
+          cp /tmp/microg/FakeStore.apk ~/crdroid/vendor/extra/apps/FakeStore/prebuilt/FakeStore.apk
+          cp /tmp/microg/GsfProxy.apk  ~/crdroid/vendor/extra/apps/GsfProxy/prebuilt/GsfProxy.apk
           ls -lh ~/crdroid/vendor/extra/apps/*/prebuilt/*.apk
 
       - name: Fetch Aurora Store & Aurora Services prebuilts
         run: |
           set -e
           fetch_latest_gitlab_apk () {
-            local project="$1"   # e.g. AuroraOSS%2FAuroraStore
+            local project="$1"
             local outfile="$2"
             local url
             url=$(curl -sS "https://gitlab.com/api/v4/projects/${project}/releases?order_by=released_at&sort=desc&per_page=1" \
@@ -204,8 +208,6 @@ jobs:
 
       - name: Inject extra packages (microG + Aurora + NewPipe) into device tree
         run: |
-          # Copy the Android.mk / product.mk skeleton that lives in this repo
-          # into the synced source tree, alongside the .apk files fetched above.
           SRC="$GITHUB_WORKSPACE/extra/vendor_extra"
           DST=~/crdroid/vendor/extra
 
@@ -218,8 +220,6 @@ jobs:
             cp "$SRC/apps/$app/Android.mk" "$DST/apps/$app/Android.mk"
           done
 
-          # Make the device product makefile inherit our extra packages.
-          # Idempotent: only appends the line if it isn't already there.
           DEVICE_MK=$(ls ~/crdroid/${{ env.DEVICE_DIR }}/crdroid_${{ env.DEVICE }}.mk 2>/dev/null || true)
           if [ -z "$DEVICE_MK" ]; then
             echo "::error::Could not find crdroid_${{ env.DEVICE }}.mk after the rename step" >&2
