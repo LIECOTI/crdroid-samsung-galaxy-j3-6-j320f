@@ -39,14 +39,6 @@ jobs:
           remove-codeql: 'true'
           remove-docker-images: 'true'
 
-      - name: Set swap to 8G (extra safety net for jack/dex)
-        run: |
-          sudo swapoff -a
-          sudo fallocate -l 8G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-
       - name: Install base build dependencies
         run: |
           sudo apt-get update
