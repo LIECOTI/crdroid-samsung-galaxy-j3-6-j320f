@@ -125,30 +125,31 @@ jobs:
       - name: Fetch microG prebuilts (GmsCore, FakeStore, GsfProxy)
         run: |
           mkdir -p /tmp/microg
-          python3 - "/tmp/microg" <<'PYEOF'
-import sys, os, urllib.request, xml.etree.ElementTree as ET
+          cat << 'EOF' > /tmp/fetch_microg.py
+          import sys, os, urllib.request, xml.etree.ElementTree as ET
 
-outdir = sys.argv[1]
-base = "https://microg.org/fdroid/repo/"
-targets = {
-    "com.google.android.gms": "GmsCore.apk",
-    "com.android.vending":    "FakeStore.apk",
-    "com.google.android.gsf": "GsfProxy.apk",
-}
+          outdir = sys.argv[1]
+          base = "https://microg.org/fdroid/repo/"
+          targets = {
+              "com.google.android.gms": "GmsCore.apk",
+              "com.android.vending":    "FakeStore.apk",
+              "com.google.android.gsf": "GsfProxy.apk",
+          }
 
-with urllib.request.urlopen(base + "index.xml") as r:
-    tree = ET.fromstring(r.read())
+          with urllib.request.urlopen(base + "index.xml") as r:
+              tree = ET.fromstring(r.read())
 
-for app in tree.findall("application"):
-    appid = app.get("id")
-    if appid not in targets:
-        continue
-    pkg = app.find("package")
-    apkname = pkg.find("apkname").text
-    dest = os.path.join(outdir, targets[appid])
-    print(f"[microG] {appid} -> {apkname}")
-    urllib.request.urlretrieve(base + apkname, dest)
-PYEOF
+          for app in tree.findall("application"):
+              appid = app.get("id")
+              if appid not in targets:
+                  continue
+              pkg = app.find("package")
+              apkname = pkg.find("apkname").text
+              dest = os.path.join(outdir, targets[appid])
+              print(f"[microG] {appid} -> {apkname}")
+              urllib.request.urlretrieve(base + apkname, dest)
+          EOF
+          python3 /tmp/fetch_microg.py "/tmp/microg"
 
           mkdir -p ~/crdroid/vendor/extra/apps/GmsCore/prebuilt
           mkdir -p ~/crdroid/vendor/extra/apps/FakeStore/prebuilt
