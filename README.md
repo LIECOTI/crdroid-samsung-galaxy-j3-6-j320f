@@ -1,1 +1,1 @@
-# crdroid-samsung-galaxy-s3-6-j320f
+# crdroid-samsung-galaxy-j3-6-j320f
