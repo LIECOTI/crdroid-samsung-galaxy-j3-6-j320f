@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+
+  <project name="iamsj7/android_device_samsung_j3xlte"
+           path="device/samsung/j3xlte"
+           remote="github"
+           revision="cm-14.1" />
+
+  <project name="iamsj7/android_device_samsung_sharkls-common"
+           path="device/samsung/sharkls-common"
+           remote="github"
+           revision="cm-14.1" />
+
+  <project name="iamsj7/android_vendor_samsung_j3xlte"
+           path="vendor/samsung/j3xlte"
+           remote="github"
+           revision="cm-14.1" />
+
+  <project name="djeman/android_kernel_samsung_sharkls"
+           path="kernel/samsung/sharkls"
+           remote="github"
+           revision="master" />
+
+</manifest>
