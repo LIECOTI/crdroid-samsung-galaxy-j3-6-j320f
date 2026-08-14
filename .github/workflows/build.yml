@@ -1,4 +1,4 @@
-name: Build crDroid 7.1.2 - j3xlte
+name: Build crDroid 7.1.2 - j3xlte by lieco
 
 on:
   workflow_dispatch:
@@ -8,8 +8,16 @@ env:
   DEVICE_DIR: device/samsung/j3xlte
   BRANCH: 7.1
   MANIFEST_URL: https://github.com/crdroidandroid/android.git
-  LOCAL_MANIFEST_REPO: ${{ github.repository }}
   BUILD_TARGET: bacon
+  # Pin a specific microG GmsCore release instead of always grabbing the
+  # newest one. Newer GmsCore builds (2026-era) sit above 100MB and target
+  # Android 10+ behaviour (SafetyNet/Play-Integrity/AdServices stubs) that a
+  # 1.5GB-RAM Nougat device like the J3 (2016) does not need and may choke
+  # on. Leave empty to auto-fetch whatever is currently newest on the
+  # official microG F-Droid repo, or set to e.g. "" and edit the fetch step
+  # below to pin an older/lighter release from
+  # https://github.com/microg/GmsCore/releases instead.
+  MICROG_PIN_LATEST: "true"
 
 jobs:
   build:
@@ -17,7 +25,7 @@ jobs:
     timeout-minutes: 1440
 
     steps:
-      - name: Checkout workflow repo (to fetch local_manifests)
+      - name: Checkout workflow repo (local manifest + extra packages)
         uses: actions/checkout@v4
 
       - name: Maximize build space
@@ -49,7 +57,7 @@ jobs:
             lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip \
             fontconfig bc rsync openjdk-8-jdk imagemagick lib32readline-dev \
             liblz4-tool libssl-dev pngcrush schedtool squashfs-tools \
-            ccache libssl-dev libncurses5-dev
+            ccache libssl-dev libncurses5-dev jq
 
       - name: Install python2.7 (legacy dependency, missing on 22.04)
         run: |
@@ -117,6 +125,131 @@ jobs:
           grep -rl "lineage_${{ env.DEVICE }}" . 2>/dev/null | while read -r file; do
             sed -i "s/lineage_${{ env.DEVICE }}/crdroid_${{ env.DEVICE }}/g" "$file"
           done
+
+      - name: Fetch microG prebuilts (GmsCore, FakeStore, GsfProxy)
+        run: |
+          mkdir -p /tmp/microg
+          python3 - "/tmp/microg" <<'PYEOF'
+          import sys, os, urllib.request, xml.etree.ElementTree as ET
+
+          outdir = sys.argv[1]
+          base = "https://microg.org/fdroid/repo/"
+          targets = {
+              "com.google.android.gms": "GmsCore.apk",
+              "com.android.vending":    "FakeStore.apk",
+              "com.google.android.gsf": "GsfProxy.apk",
+          }
+
+          with urllib.request.urlopen(base + "index.xml") as r:
+              tree = ET.fromstring(r.read())
+
+          for app in tree.findall("application"):
+              appid = app.get("id")
+              if appid not in targets:
+                  continue
+              pkg = app.find("package")  # first <package> = newest version
+              apkname = pkg.find("apkname").text
+              dest = os.path.join(outdir, targets[appid])
+              print(f"[microG] {appid} -> {apkname}")
+              urllib.request.urlretrieve(base + apkname, dest)
+          PYEOF
+
+          mkdir -p ~/crdroid/vendor/extra/apps/GmsCore/prebuilt
+          mkdir -p ~/crdroid/vendor/extra/apps/FakeStore/prebuilt
+          mkdir -p ~/crdroid/vendor/extra/apps/GsfProxy/prebuilt
+          cp /tmp/microg/GmsCore.apk    ~/crdroid/vendor/extra/apps/GmsCore/prebuilt/GmsCore.apk
+          cp /tmp/microg/FakeStore.apk  ~/crdroid/vendor/extra/apps/FakeStore/prebuilt/FakeStore.apk
+          cp /tmp/microg/GsfProxy.apk   ~/crdroid/vendor/extra/apps/GsfProxy/prebuilt/GsfProxy.apk
+          ls -lh ~/crdroid/vendor/extra/apps/*/prebuilt/*.apk
+
+      - name: Fetch Aurora Store & Aurora Services prebuilts
+        run: |
+          set -e
+          fetch_latest_gitlab_apk () {
+            local project="$1"   # e.g. AuroraOSS%2FAuroraStore
+            local outfile="$2"
+            local url
+            url=$(curl -sS "https://gitlab.com/api/v4/projects/${project}/releases?order_by=released_at&sort=desc&per_page=1" \
+                  | jq -r '.[0].assets.links[] | select(.name | test("\\.apk$")) | .url' \
+                  | head -n1)
+            if [ -z "$url" ] || [ "$url" = "null" ]; then
+              echo "::error::Could not resolve latest .apk asset for $project" >&2
+              exit 1
+            fi
+            echo "[Aurora] $project -> $url"
+            curl -sSL "$url" -o "$outfile"
+          }
+
+          mkdir -p /tmp/aurora
+          fetch_latest_gitlab_apk "AuroraOSS%2FAuroraStore"    /tmp/aurora/AuroraStore.apk
+          fetch_latest_gitlab_apk "AuroraOSS%2FAuroraServices" /tmp/aurora/AuroraServices.apk
+          curl -sSL "https://gitlab.com/AuroraOSS/AuroraServices/raw/master/app/src/main/assets/permissions_com.aurora.services.xml" \
+               -o /tmp/aurora/permissions_com.aurora.services.xml
+
+          mkdir -p ~/crdroid/vendor/extra/apps/AuroraStore/prebuilt
+          mkdir -p ~/crdroid/vendor/extra/apps/AuroraServices/prebuilt
+          mkdir -p ~/crdroid/vendor/extra/permissions
+          cp /tmp/aurora/AuroraStore.apk    ~/crdroid/vendor/extra/apps/AuroraStore/prebuilt/AuroraStore.apk
+          cp /tmp/aurora/AuroraServices.apk ~/crdroid/vendor/extra/apps/AuroraServices/prebuilt/AuroraServices.apk
+          cp /tmp/aurora/permissions_com.aurora.services.xml \
+             ~/crdroid/vendor/extra/permissions/permissions_com.aurora.services.xml
+          ls -lh ~/crdroid/vendor/extra/apps/*/prebuilt/*.apk
+
+      - name: Fetch NewPipe prebuilt (latest GitHub release)
+        run: |
+          set -e
+          URL=$(curl -sS "https://api.github.com/repos/TeamNewPipe/NewPipe/releases/latest" \
+                | jq -r '.assets[] | select(.name | test("\\.apk$")) | .browser_download_url' \
+                | head -n1)
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "::error::Could not resolve latest NewPipe .apk asset" >&2
+            exit 1
+          fi
+          echo "[NewPipe] -> $URL"
+          mkdir -p ~/crdroid/vendor/extra/apps/NewPipe/prebuilt
+          curl -sSL "$URL" -o ~/crdroid/vendor/extra/apps/NewPipe/prebuilt/NewPipe.apk
+          ls -lh ~/crdroid/vendor/extra/apps/NewPipe/prebuilt/NewPipe.apk
+
+      - name: Inject extra packages (microG + Aurora + NewPipe) into device tree
+        run: |
+          # Copy the Android.mk / product.mk skeleton that lives in this repo
+          # into the synced source tree, alongside the .apk files fetched above.
+          SRC="$GITHUB_WORKSPACE/extra/vendor_extra"
+          DST=~/crdroid/vendor/extra
+
+          mkdir -p "$DST/products"
+          cp "$SRC/Android.mk" "$DST/Android.mk"
+          cp "$SRC/products/extra_packages.mk" "$DST/products/extra_packages.mk"
+
+          for app in GmsCore FakeStore GsfProxy AuroraStore AuroraServices NewPipe; do
+            mkdir -p "$DST/apps/$app"
+            cp "$SRC/apps/$app/Android.mk" "$DST/apps/$app/Android.mk"
+          done
+
+          # Make the device product makefile inherit our extra packages.
+          # Idempotent: only appends the line if it isn't already there.
+          DEVICE_MK=$(ls ~/crdroid/${{ env.DEVICE_DIR }}/crdroid_${{ env.DEVICE }}.mk 2>/dev/null || true)
+          if [ -z "$DEVICE_MK" ]; then
+            echo "::error::Could not find crdroid_${{ env.DEVICE }}.mk after the rename step" >&2
+            exit 1
+          fi
+          if ! grep -q "vendor/extra/products/extra_packages.mk" "$DEVICE_MK"; then
+            printf '\n# microG + Aurora Store/Services (injected by CI)\n$(call inherit-product, vendor/extra/products/extra_packages.mk)\n' >> "$DEVICE_MK"
+            echo "Appended inherit-product line to $DEVICE_MK"
+          else
+            echo "Inherit-product line already present in $DEVICE_MK"
+          fi
+
+      - name: Check for native signature-spoofing support (informational)
+        run: |
+          MANIFEST=~/crdroid/frameworks/base/core/res/AndroidManifest.xml
+          if [ -f "$MANIFEST" ] && grep -q "FAKE_PACKAGE_SIGNATURE" "$MANIFEST"; then
+            echo "OK: frameworks/base already declares android.permission.FAKE_PACKAGE_SIGNATURE"
+            echo "microG will be able to request signature spoofing at runtime (grant it in Settings after first boot)."
+          else
+            echo "::warning::FAKE_PACKAGE_SIGNATURE not found in frameworks/base/core/res/AndroidManifest.xml for this branch."
+            echo "::warning::microG (GmsCore) will likely install but most Google-account-dependent features will not work without a signature-spoofing patch for this specific tree."
+          fi
 
       - name: Set up ccache
         run: |
